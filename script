@@ -1,7 +1,11 @@
 #!/bin/bash
 
-# Function to prompt user for volume ID
-read -p "Enter the Volume ID to encrypt: " volume_id
+# Check if volume ID is passed as an argument
+if [ -n "$1" ]; then
+    volume_id="$1"
+else
+    read -p "Enter the Volume ID to encrypt: " volume_id
+fi
 
 # Define KMS Key ID
 kms_key_id="arn:aws:kms:us-east-1:617719031171:key/d480cb19-7ad6-4759-a210-74d573a71d8c"
