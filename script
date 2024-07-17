@@ -1,0 +1,84 @@
+#!/bin/bash
+
+# Function to prompt user for volume ID
+read -p "Enter the Volume ID to encrypt: " volume_id
+
+# Define KMS Key ID
+kms_key_id="arn:aws:kms:us-east-1:617719031171:key/d480cb19-7ad6-4759-a210-74d573a71d8c"
+
+# Describe the volume to get instance ID, availability zone, etc.
+describe_volume=$(aws ec2 describe-volumes --volume-ids "$volume_id")
+instance_id=$(echo $describe_volume | jq -r '.Volumes[0].Attachments[0].InstanceId')
+availability_zone=$(echo $describe_volume | jq -r '.Volumes[0].AvailabilityZone')
+volume_type=$(echo $describe_volume | jq -r '.Volumes[0].VolumeType')
+delete_on_termination=$(echo $describe_volume | jq -r '.Volumes[0].Attachments[0].DeleteOnTermination')
+device_mount=$(echo $describe_volume | jq -r '.Volumes[0].Attachments[0].Device')
+is_encrypted=$(echo $describe_volume | jq -r '.Volumes[0].Encrypted')
+
+# Check if the volume is already encrypted
+if [ "$is_encrypted" == "true" ]; then
+    echo "The volume $volume_id is already encrypted. Exiting."
+    exit 0
+fi
+
+# Describe the instance to get the current state
+describe_instance=$(aws ec2 describe-instances --instance-ids "$instance_id")
+instance_state=$(echo $describe_instance | jq -r '.Reservations[0].Instances[0].State.Name')
+
+# Create a snapshot of the volume
+snapshot_id=$(aws ec2 create-snapshot --volume-id "$volume_id" --description "Snapshot for volume encryption" --query 'SnapshotId' --output text)
+
+# Wait for the snapshot to complete
+echo "Waiting for snapshot $snapshot_id to complete..."
+aws ec2 wait snapshot-completed --snapshot-ids "$snapshot_id"
+
+# Copy and encrypt the snapshot
+encrypted_snapshot_id=$(aws ec2 copy-snapshot --source-region us-east-1 --source-snapshot-id "$snapshot_id" --kms-key-id "$kms_key_id" --encrypted --query 'SnapshotId' --output text)
+
+# Wait for the encrypted snapshot to complete
+echo "Waiting for encrypted snapshot $encrypted_snapshot_id to complete..."
+aws ec2 wait snapshot-completed --snapshot-ids "$encrypted_snapshot_id"
+
+# Create an encrypted volume from the encrypted snapshot
+new_volume_id=$(aws ec2 create-volume --snapshot-id "$encrypted_snapshot_id" --availability-zone "$availability_zone" --volume-type "$volume_type" --kms-key-id "$kms_key_id" --encrypted --tag-specifications "ResourceType=volume,Tags=[{Key=encrypted-clone-of-volume,Value=$volume_id}]" --query 'VolumeId' --output text)
+
+# Ensure the new volume ID is obtained
+if [ -z "$new_volume_id" ]; then
+    echo "Failed to create the new encrypted volume. Exiting."
+    exit 1
+fi
+
+# Stop the instance
+echo "Stopping instance $instance_id..."
+aws ec2 stop-instances --instance-ids "$instance_id"
+aws ec2 wait instance-stopped --instance-ids "$instance_id"
+
+# Detach the original volume
+echo "Detaching original volume $volume_id..."
+aws ec2 detach-volume --volume-id "$volume_id"
+aws ec2 wait volume-available --volume-ids "$volume_id"
+
+# Attach the new encrypted volume
+echo "Attaching new encrypted volume $new_volume_id..."
+aws ec2 attach-volume --volume-id "$new_volume_id" --instance-id "$instance_id" --device "$device_mount"
+aws ec2 wait volume-in-use --volume-ids "$new_volume_id"
+
+# Apply DeleteOnTermination attribute to the new volume
+aws ec2 modify-instance-attribute --instance-id "$instance_id" --block-device-mappings "[{\"DeviceName\": \"$device_mount\", \"Ebs\": {\"DeleteOnTermination\": $delete_on_termination}}]"
+
+# Start the instance again
+echo "Starting instance $instance_id..."
+aws ec2 start-instances --instance-ids "$instance_id"
+aws ec2 wait instance-running --instance-ids "$instance_id"
+
+# Tag the original unencrypted volume as remediated
+aws ec2 create-tags --resources "$volume_id" --tags Key=remediated,Value="$new_volume_id"
+
+# Clean up snapshots
+echo "Deleting original snapshot $snapshot_id..."
+aws ec2 delete-snapshot --snapshot-id "$snapshot_id"
+
+echo "Deleting encrypted snapshot $encrypted_snapshot_id..."
+aws ec2 delete-snapshot --snapshot-id "$encrypted_snapshot_id"
+
+echo "Encryption process completed successfully!"
