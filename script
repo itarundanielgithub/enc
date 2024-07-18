@@ -1,16 +1,18 @@
+# curl -s https://raw.githubusercontent.com/itarundanielgithub/enc/main/script | bash -s i-45734356 arn:aws:kms:us-east-1:617719031171:key/d480cb19-7ad6-4759-a210-74d573a71d8c
+
 #!/bin/bash
 
 # Check if instance ID and KMS key ID are passed as arguments
 if [ -n "$1" ]; then
-    instance_id="$1"
+    kms_key_id="$1"
 else
-    read -p "Enter the Instance ID to encrypt: " instance_id
+    read -p "Enter the KMS Key ID: " kms_key_id
 fi
 
 if [ -n "$2" ]; then
-    kms_key_id="$2"
+    instance_id="$2"
 else
-    read -p "Enter the KMS Key ID: " kms_key_id
+    read -p "Enter the Instance ID to encrypt: " instance_id
 fi
 
 # Describe the instance to get attached volumes
