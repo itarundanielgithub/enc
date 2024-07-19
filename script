@@ -1,5 +1,7 @@
+#071920241754
+
 #!/bin/bash
-#071920241735
+
 # Set the delay between snapshot state checks (in seconds)
 DELAY=30
 
@@ -97,13 +99,6 @@ for volume_id in $volume_ids; do
     device_mounts+=("$device_mount")
     delete_on_terminations+=("$delete_on_termination")
     snapshots+=("$snapshot_id $encrypted_snapshot_id")
-
-    log "Detaching original volume $volume_id..."
-    aws ec2 detach-volume --volume-id "$volume_id" --region "$region" || error_exit "Failed to detach volume $volume_id"
-    aws ec2 wait volume-available --volume-ids "$volume_id" --region "$region" || error_exit "Volume $volume_id did not become available"
-
-    log "Tagging original volume $volume_id as remediated"
-    aws ec2 create-tags --resources "$volume_id" --tags Key=remediated,Value="$new_volume_id" --region "$region" || error_exit "Failed to tag volume $volume_id"
 done
 
 # Stop the instance only if there are volumes to encrypt
@@ -117,6 +112,10 @@ if [ "$volumes_to_encrypt" = true ]; then
         new_volume_id="${new_volumes[$index]}"
         device_mount="${device_mounts[$index]}"
         delete_on_termination="${delete_on_terminations[$index]}"
+
+        log "Detaching original volume ${volume_ids[$index]}..."
+        aws ec2 detach-volume --volume-id "${volume_ids[$index]}" --region "$region" || error_exit "Failed to detach volume ${volume_ids[$index]}"
+        aws ec2 wait volume-available --volume-ids "${volume_ids[$index]}" --region "$region" || error_exit "Volume ${volume_ids[$index]} did not become available"
 
         log "Attaching new encrypted volume $new_volume_id to instance $instance_id"
         aws ec2 attach-volume --volume-id "$new_volume_id" --instance-id "$instance_id" --device "$device_mount" --region "$region" || error_exit "Failed to attach new volume $new_volume_id"
@@ -143,3 +142,4 @@ for snapshot_pair in "${snapshots[@]}"; do
 done
 
 log "All volumes processed successfully!"
+
