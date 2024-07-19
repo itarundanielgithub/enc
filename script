@@ -1,6 +1,13 @@
-# curl -s https://raw.githubusercontent.com/itarundanielgithub/enc/main/script | bash -s i-45734356 arn:aws:kms:us-east-1:617719031171:key/d480cb19-7ad6-4759-a210-74d573a71d8c
-
 #!/bin/bash
+
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"
+}
+
+error_exit() {
+    log "$1" 1>&2
+    exit 1
+}
 
 # Check if instance ID and KMS key ID are passed as arguments
 if [ -n "$1" ]; then
@@ -15,82 +22,69 @@ else
     read -p "Enter the Instance ID to encrypt: " instance_id
 fi
 
+# Stop the instance before performing any other steps
+log "Stopping instance $instance_id..."
+aws ec2 stop-instances --instance-ids "$instance_id" || error_exit "Failed to stop instance $instance_id"
+aws ec2 wait instance-stopped --instance-ids "$instance_id" || error_exit "Instance $instance_id did not stop"
+
 # Describe the instance to get attached volumes
-describe_instance=$(aws ec2 describe-instances --instance-ids "$instance_id")
+describe_instance=$(aws ec2 describe-instances --instance-ids "$instance_id") || error_exit "Failed to describe instance $instance_id"
 volume_ids=$(echo $describe_instance | jq -r '.Reservations[0].Instances[0].BlockDeviceMappings[].Ebs.VolumeId')
 
 # Iterate over each volume and encrypt if not already encrypted
 for volume_id in $volume_ids; do
-    describe_volume=$(aws ec2 describe-volumes --volume-ids "$volume_id")
+    log "Processing volume $volume_id"
+    describe_volume=$(aws ec2 describe-volumes --volume-ids "$volume_id") || error_exit "Failed to describe volume $volume_id"
     availability_zone=$(echo $describe_volume | jq -r '.Volumes[0].AvailabilityZone')
     volume_type=$(echo $describe_volume | jq -r '.Volumes[0].VolumeType')
     delete_on_termination=$(echo $describe_volume | jq -r '.Volumes[0].Attachments[0].DeleteOnTermination')
     device_mount=$(echo $describe_volume | jq -r '.Volumes[0].Attachments[0].Device')
     is_encrypted=$(echo $describe_volume | jq -r '.Volumes[0].Encrypted')
 
-    # Check if the volume is already encrypted
     if [ "$is_encrypted" == "true" ]; then
-        echo "The volume $volume_id is already encrypted. Skipping."
+        log "The volume $volume_id is already encrypted. Skipping."
         continue
     fi
 
-    # Create a snapshot of the volume
-    snapshot_id=$(aws ec2 create-snapshot --volume-id "$volume_id" --description "Snapshot for volume encryption" --query 'SnapshotId' --output text)
+    log "Creating snapshot for volume $volume_id"
+    snapshot_id=$(aws ec2 create-snapshot --volume-id "$volume_id" --description "Snapshot for volume encryption" --query 'SnapshotId' --output text) || error_exit "Failed to create snapshot for volume $volume_id"
 
-    # Wait for the snapshot to complete
-    echo "Waiting for snapshot $snapshot_id to complete..."
-    aws ec2 wait snapshot-completed --snapshot-ids "$snapshot_id"
+    log "Waiting for snapshot $snapshot_id to complete..."
+    aws ec2 wait snapshot-completed --snapshot-ids "$snapshot_id" || error_exit "Snapshot $snapshot_id did not complete"
 
-    # Copy and encrypt the snapshot
-    encrypted_snapshot_id=$(aws ec2 copy-snapshot --source-region us-east-1 --source-snapshot-id "$snapshot_id" --kms-key-id "$kms_key_id" --encrypted --query 'SnapshotId' --output text)
+    log "Copying and encrypting snapshot $snapshot_id"
+    encrypted_snapshot_id=$(aws ec2 copy-snapshot --source-region us-east-1 --source-snapshot-id "$snapshot_id" --kms-key-id "$kms_key_id" --encrypted --query 'SnapshotId' --output text) || error_exit "Failed to copy and encrypt snapshot $snapshot_id"
 
-    # Wait for the encrypted snapshot to complete
-    echo "Waiting for encrypted snapshot $encrypted_snapshot_id to complete..."
-    aws ec2 wait snapshot-completed --snapshot-ids "$encrypted_snapshot_id"
+    log "Waiting for encrypted snapshot $encrypted_snapshot_id to complete..."
+    aws ec2 wait snapshot-completed --snapshot-ids "$encrypted_snapshot_id" || error_exit "Encrypted snapshot $encrypted_snapshot_id did not complete"
 
-    # Create an encrypted volume from the encrypted snapshot
-    new_volume_id=$(aws ec2 create-volume --snapshot-id "$encrypted_snapshot_id" --availability-zone "$availability_zone" --volume-type "$volume_type" --kms-key-id "$kms_key_id" --encrypted --tag-specifications "ResourceType=volume,Tags=[{Key=encrypted-clone-of-volume,Value=$volume_id}]" --query 'VolumeId' --output text)
+    log "Creating new encrypted volume from encrypted snapshot $encrypted_snapshot_id"
+    new_volume_id=$(aws ec2 create-volume --snapshot-id "$encrypted_snapshot_id" --availability-zone "$availability_zone" --volume-type "$volume_type" --kms-key-id "$kms_key_id" --encrypted --tag-specifications "ResourceType=volume,Tags=[{Key=encrypted-clone-of-volume,Value=$volume_id}]" --query 'VolumeId' --output text) || error_exit "Failed to create the new encrypted volume for $volume_id"
 
-    # Ensure the new volume ID is obtained
-    if [ -z "$new_volume_id" ]; then
-        echo "Failed to create the new encrypted volume for $volume_id. Exiting."
-        exit 1
-    fi
+    log "Detaching original volume $volume_id..."
+    aws ec2 detach-volume --volume-id "$volume_id" || error_exit "Failed to detach volume $volume_id"
+    aws ec2 wait volume-available --volume-ids "$volume_id" || error_exit "Volume $volume_id did not become available"
 
-    # Stop the instance
-    echo "Stopping instance $instance_id..."
-    aws ec2 stop-instances --instance-ids "$instance_id"
-    aws ec2 wait instance-stopped --instance-ids "$instance_id"
+    log "Attaching new encrypted volume $new_volume_id..."
+    aws ec2 attach-volume --volume-id "$new_volume_id" --instance-id "$instance_id" --device "$device_mount" || error_exit "Failed to attach new volume $new_volume_id"
+    aws ec2 wait volume-in-use --volume-ids "$new_volume_id" || error_exit "New volume $new_volume_id did not become in-use"
 
-    # Detach the original volume
-    echo "Detaching original volume $volume_id..."
-    aws ec2 detach-volume --volume-id "$volume_id"
-    aws ec2 wait volume-available --volume-ids "$volume_id"
+    aws ec2 modify-instance-attribute --instance-id "$instance_id" --block-device-mappings "[{\"DeviceName\": \"$device_mount\", \"Ebs\": {\"DeleteOnTermination\": $delete_on_termination}}]" || error_exit "Failed to modify instance attribute for $new_volume_id"
 
-    # Attach the new encrypted volume
-    echo "Attaching new encrypted volume $new_volume_id..."
-    aws ec2 attach-volume --volume-id "$new_volume_id" --instance-id "$instance_id" --device "$device_mount"
-    aws ec2 wait volume-in-use --volume-ids "$new_volume_id"
+    log "Starting instance $instance_id..."
+    aws ec2 start-instances --instance-ids "$instance_id" || error_exit "Failed to start instance $instance_id"
+    aws ec2 wait instance-running --instance-ids "$instance_id" || error_exit "Instance $instance_id did not start"
 
-    # Apply DeleteOnTermination attribute to the new volume
-    aws ec2 modify-instance-attribute --instance-id "$instance_id" --block-device-mappings "[{\"DeviceName\": \"$device_mount\", \"Ebs\": {\"DeleteOnTermination\": $delete_on_termination}}]"
+    log "Tagging original volume $volume_id as remediated"
+    aws ec2 create-tags --resources "$volume_id" --tags Key=remediated,Value="$new_volume_id" || error_exit "Failed to tag volume $volume_id"
 
-    # Start the instance again
-    echo "Starting instance $instance_id..."
-    aws ec2 start-instances --instance-ids "$instance_id"
-    aws ec2 wait instance-running --instance-ids "$instance_id"
+    log "Deleting original snapshot $snapshot_id..."
+    aws ec2 delete-snapshot --snapshot-id "$snapshot_id" || error_exit "Failed to delete snapshot $snapshot_id"
 
-    # Tag the original unencrypted volume as remediated
-    aws ec2 create-tags --resources "$volume_id" --tags Key=remediated,Value="$new_volume_id"
+    log "Deleting encrypted snapshot $encrypted_snapshot_id..."
+    aws ec2 delete-snapshot --snapshot-id "$encrypted_snapshot_id" || error_exit "Failed to delete encrypted snapshot $encrypted_snapshot_id"
 
-    # Clean up snapshots
-    echo "Deleting original snapshot $snapshot_id..."
-    aws ec2 delete-snapshot --snapshot-id "$snapshot_id"
-
-    echo "Deleting encrypted snapshot $encrypted_snapshot_id..."
-    aws ec2 delete-snapshot --snapshot-id "$encrypted_snapshot_id"
-
-    echo "Volume $volume_id encrypted successfully!"
+    log "Volume $volume_id encrypted successfully!"
 done
 
-echo "All volumes processed successfully!"
+log "All volumes processed successfully!"
