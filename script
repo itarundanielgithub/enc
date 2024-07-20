@@ -1,4 +1,4 @@
-#072020241026
+#072020241053
 #!/bin/bash
 
 # Set the delay between snapshot state checks (in seconds)
@@ -27,6 +27,14 @@ wait_for_snapshot_completion() {
         log "Waiting for snapshot $snapshot_id to complete..."
         sleep $delay
     done
+}
+
+# Function to check if snapshot exists
+snapshot_exists() {
+    snapshot_id=$1
+    region=$2
+
+    aws ec2 describe-snapshots --snapshot-ids "$snapshot_id" --region "$region" --query "Snapshots[0].State" --output text &> /dev/null
 }
 
 # Fetch the current region
@@ -134,15 +142,18 @@ fi
 
 # Delete snapshots after volumes are reattached
 for snapshot_pair in "${snapshots[@]}"; do
-    original_volume_id=$(echo "$snapshot_pair" | cut -d' ' -f1)
     snapshot_id=$(echo "$snapshot_pair" | cut -d' ' -f2)
     encrypted_snapshot_id=$(echo "$snapshot_pair" | cut -d' ' -f3)
     
-    log "Deleting original snapshot $snapshot_id..."
-    aws ec2 delete-snapshot --snapshot-id "$snapshot_id" --region "$region" || log "Failed to delete snapshot $snapshot_id"
+    if snapshot_exists "$snapshot_id" "$region"; then
+        log "Deleting original snapshot $snapshot_id..."
+        aws ec2 delete-snapshot --snapshot-id "$snapshot_id" --region "$region" || log "Failed to delete snapshot $snapshot_id"
+    fi
 
-    log "Deleting encrypted snapshot $encrypted_snapshot_id..."
-    aws ec2 delete-snapshot --snapshot-id "$encrypted_snapshot_id" --region "$region" || log "Failed to delete encrypted snapshot $encrypted_snapshot_id"
+    if snapshot_exists "$encrypted_snapshot_id" "$region"; then
+        log "Deleting encrypted snapshot $encrypted_snapshot_id..."
+        aws ec2 delete-snapshot --snapshot-id "$encrypted_snapshot_id" --region "$region" || log "Failed to delete encrypted snapshot $encrypted_snapshot_id"
+    fi
 done
 
 log "All volumes processed successfully!"
