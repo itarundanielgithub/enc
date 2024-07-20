@@ -1,4 +1,4 @@
-#072020241004
+#072020241026
 #!/bin/bash
 
 # Set the delay between snapshot state checks (in seconds)
@@ -97,7 +97,7 @@ for volume_id in $volume_ids; do
     new_volumes+=("$new_volume_id")
     device_mounts+=("$device_mount")
     delete_on_terminations+=("$delete_on_termination")
-    snapshots+=("$snapshot_id $encrypted_snapshot_id")
+    snapshots+=("$volume_id $snapshot_id $encrypted_snapshot_id")
 done
 
 # Stop the instance only if there are volumes to encrypt
@@ -134,8 +134,9 @@ fi
 
 # Delete snapshots after volumes are reattached
 for snapshot_pair in "${snapshots[@]}"; do
-    snapshot_id=$(echo "$snapshot_pair" | cut -d' ' -f1)
-    encrypted_snapshot_id=$(echo "$snapshot_pair" | cut -d' ' -f2)
+    original_volume_id=$(echo "$snapshot_pair" | cut -d' ' -f1)
+    snapshot_id=$(echo "$snapshot_pair" | cut -d' ' -f2)
+    encrypted_snapshot_id=$(echo "$snapshot_pair" | cut -d' ' -f3)
     
     log "Deleting original snapshot $snapshot_id..."
     aws ec2 delete-snapshot --snapshot-id "$snapshot_id" --region "$region" || log "Failed to delete snapshot $snapshot_id"
