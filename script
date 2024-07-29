@@ -37,7 +37,7 @@ snapshot_exists() {
 }
 
 # Fetch the current region
-region=$reg
+reg=$reg
 
 log "Detected AWS region: $reg"
 
