@@ -37,10 +37,7 @@ snapshot_exists() {
 }
 
 # Fetch the current region
-region=$(aws ec2 describe-availability-zones --query "AvailabilityZones[0].RegionName" --output text)
-if [ -z "$region" ]; then
-    error_exit "Failed to fetch the AWS region"
-fi
+region=$reg
 
 log "Detected AWS region: $region"
 
@@ -55,6 +52,12 @@ if [ -n "$2" ]; then
     instance_id="$2"
 else
     read -p "Enter the Instance ID to encrypt: " instance_id
+fi
+
+if [ -n "$3" ]; then
+    reg="$3"
+else
+    read -p "Enter the region: " reg
 fi
 
 # Describe the instance to get attached volumes
