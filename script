@@ -19,7 +19,7 @@ wait_for_snapshot_completion() {
     delay=$3
 
     while true; do
-        state=$(aws ec2 describe-snapshots --snapshot-ids "$snapshot_id" --region "$region" --query "Snapshots[0].State" --output text)
+        state=$(aws ec2 describe-snapshots --snapshot-ids "$snapshot_id" --region "$reg" --query "Snapshots[0].State" --output text)
         if [ "$state" == "completed" ]; then
             return 0
         fi
@@ -33,13 +33,13 @@ snapshot_exists() {
     snapshot_id=$1
     region=$2
 
-    aws ec2 describe-snapshots --snapshot-ids "$snapshot_id" --region "$region" --query "Snapshots[0].State" --output text &> /dev/null
+    aws ec2 describe-snapshots --snapshot-ids "$snapshot_id" --region "$reg" --query "Snapshots[0].State" --output text &> /dev/null
 }
 
 # Fetch the current region
 region=$reg
 
-log "Detected AWS region: $region"
+log "Detected AWS region: $reg"
 
 # Check if KMS key ID and instance ID are passed as arguments
 if [ -n "$1" ]; then
@@ -61,7 +61,7 @@ else
 fi
 
 # Describe the instance to get attached volumes
-describe_instance=$(aws ec2 describe-instances --instance-ids "$instance_id" --region "$region") || error_exit "Failed to describe instance $instance_id"
+describe_instance=$(aws ec2 describe-instances --instance-ids "$instance_id" --region "$reg") || error_exit "Failed to describe instance $instance_id"
 volume_ids=$(echo $describe_instance | jq -r '.Reservations[0].Instances[0].BlockDeviceMappings[].Ebs.VolumeId')
 
 # Arrays to hold volume information
@@ -74,7 +74,7 @@ volumes_to_encrypt=false
 # Iterate over each volume and encrypt if not already encrypted
 for volume_id in $volume_ids; do
     log "Processing volume $volume_id"
-    describe_volume=$(aws ec2 describe-volumes --volume-ids "$volume_id" --region "$region") || error_exit "Failed to describe volume $volume_id"
+    describe_volume=$(aws ec2 describe-volumes --volume-ids "$volume_id" --region "$reg") || error_exit "Failed to describe volume $volume_id"
     availability_zone=$(echo $describe_volume | jq -r '.Volumes[0].AvailabilityZone')
     volume_type=$(echo $describe_volume | jq -r '.Volumes[0].VolumeType')
     delete_on_termination=$(echo $describe_volume | jq -r '.Volumes[0].Attachments[0].DeleteOnTermination')
@@ -89,13 +89,13 @@ for volume_id in $volume_ids; do
     volumes_to_encrypt=true
 
     log "Creating snapshot for volume $volume_id"
-    snapshot_id=$(aws ec2 create-snapshot --volume-id "$volume_id" --description "Snapshot for volume encryption" --query 'SnapshotId' --output text --region "$region") || error_exit "Failed to create snapshot for volume $volume_id"
+    snapshot_id=$(aws ec2 create-snapshot --volume-id "$volume_id" --description "Snapshot for volume encryption" --query 'SnapshotId' --output text --region "$reg") || error_exit "Failed to create snapshot for volume $volume_id"
 
     log "Waiting for snapshot $snapshot_id to complete..."
-    wait_for_snapshot_completion "$snapshot_id" "$region" "$DELAY" || error_exit "Snapshot $snapshot_id did not complete"
+    wait_for_snapshot_completion "$snapshot_id" "$reg" "$DELAY" || error_exit "Snapshot $snapshot_id did not complete"
 
     log "Creating new encrypted volume from snapshot $snapshot_id"
-    new_volume_id=$(aws ec2 create-volume --snapshot-id "$snapshot_id" --availability-zone "$availability_zone" --volume-type "$volume_type" --kms-key-id "$kms_key_id" --encrypted --tag-specifications "ResourceType=volume,Tags=[{Key=encrypted-clone-of-volume,Value=$volume_id}]" --query 'VolumeId' --output text --region "$region") || error_exit "Failed to create the new encrypted volume for $volume_id"
+    new_volume_id=$(aws ec2 create-volume --snapshot-id "$snapshot_id" --availability-zone "$availability_zone" --volume-type "$volume_type" --kms-key-id "$kms_key_id" --encrypted --tag-specifications "ResourceType=volume,Tags=[{Key=encrypted-clone-of-volume,Value=$volume_id}]" --query 'VolumeId' --output text --region "$reg") || error_exit "Failed to create the new encrypted volume for $volume_id"
 
     # Store new volume information
     new_volumes+=("$new_volume_id")
@@ -106,9 +106,9 @@ done
 
 # Stop the instance only if there are volumes to encrypt
 if [ "$volumes_to_encrypt" = true ]; then
-    log "Stopping instance $instance_id in region $region..."
-    aws ec2 stop-instances --instance-ids "$instance_id" --region "$region" || error_exit "Failed to stop instance $instance_id"
-    aws ec2 wait instance-stopped --instance-ids "$instance_id" --region "$region" || error_exit "Instance $instance_id did not stop"
+    log "Stopping instance $instance_id in region $reg..."
+    aws ec2 stop-instances --instance-ids "$instance_id" --region "$reg" || error_exit "Failed to stop instance $instance_id"
+    aws ec2 wait instance-stopped --instance-ids "$instance_id" --region "$reg" || error_exit "Instance $instance_id did not stop"
 
     # Detach original volumes and reattach new encrypted volumes
     for index in "${!new_volumes[@]}"; do
@@ -118,31 +118,31 @@ if [ "$volumes_to_encrypt" = true ]; then
         original_volume_id=$(echo "${snapshots[$index]}" | cut -d' ' -f1)
 
         log "Detaching original volume $original_volume_id..."
-        aws ec2 detach-volume --volume-id "$original_volume_id" --region "$region" || error_exit "Failed to detach volume $original_volume_id"
-        aws ec2 wait volume-available --volume-ids "$original_volume_id" --region "$region" || error_exit "Volume $original_volume_id did not become available"
+        aws ec2 detach-volume --volume-id "$original_volume_id" --region "$reg" || error_exit "Failed to detach volume $original_volume_id"
+        aws ec2 wait volume-available --volume-ids "$original_volume_id" --region "$reg" || error_exit "Volume $original_volume_id did not become available"
 
         log "Attaching new encrypted volume $new_volume_id to instance $instance_id"
-        aws ec2 attach-volume --volume-id "$new_volume_id" --instance-id "$instance_id" --device "$device_mount" --region "$region" || error_exit "Failed to attach new volume $new_volume_id"
-        aws ec2 wait volume-in-use --volume-ids "$new_volume_id" --region "$region" || error_exit "New volume $new_volume_id did not become in-use"
+        aws ec2 attach-volume --volume-id "$new_volume_id" --instance-id "$instance_id" --device "$device_mount" --region "$reg" || error_exit "Failed to attach new volume $new_volume_id"
+        aws ec2 wait volume-in-use --volume-ids "$new_volume_id" --region "$reg" || error_exit "New volume $new_volume_id did not become in-use"
 
-        aws ec2 modify-instance-attribute --instance-id "$instance_id" --block-device-mappings "[{\"DeviceName\": \"$device_mount\", \"Ebs\": {\"DeleteOnTermination\": $delete_on_termination}}]" --region "$region" || error_exit "Failed to modify instance attribute for $new_volume_id"
+        aws ec2 modify-instance-attribute --instance-id "$instance_id" --block-device-mappings "[{\"DeviceName\": \"$device_mount\", \"Ebs\": {\"DeleteOnTermination\": $delete_on_termination}}]" --region "$reg" || error_exit "Failed to modify instance attribute for $new_volume_id"
 
         log "Tagging original volume $original_volume_id as remediated"
-        aws ec2 create-tags --resources "$original_volume_id" --tags Key=remediated,Value="$new_volume_id" --region "$region" || error_exit "Failed to tag volume $original_volume_id"
+        aws ec2 create-tags --resources "$original_volume_id" --tags Key=remediated,Value="$new_volume_id" --region "$reg" || error_exit "Failed to tag volume $original_volume_id"
     done
 
     log "Starting instance $instance_id..."
-    aws ec2 start-instances --instance-ids "$instance_id" --region "$region" || error_exit "Failed to start instance $instance_id"
-    aws ec2 wait instance-running --instance-ids "$instance_id" --region "$region" || error_exit "Instance $instance_id did not start"
+    aws ec2 start-instances --instance-ids "$instance_id" --region "$reg" || error_exit "Failed to start instance $instance_id"
+    aws ec2 wait instance-running --instance-ids "$instance_id" --region "$reg" || error_exit "Instance $instance_id did not start"
 fi
 
 # Delete snapshots after volumes are reattached
 for snapshot_pair in "${snapshots[@]}"; do
     snapshot_id=$(echo "$snapshot_pair" | cut -d' ' -f2)
     
-    if snapshot_exists "$snapshot_id" "$region"; then
+    if snapshot_exists "$snapshot_id" "$reg"; then
         log "Deleting original snapshot $snapshot_id..."
-        aws ec2 delete-snapshot --snapshot-id "$snapshot_id" --region "$region" || log "Failed to delete snapshot $snapshot_id"
+        aws ec2 delete-snapshot --snapshot-id "$snapshot_id" --region "$reg" || log "Failed to delete snapshot $snapshot_id"
     fi
 done
 
