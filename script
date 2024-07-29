@@ -37,8 +37,8 @@ snapshot_exists() {
 }
 
 # Fetch the current region
-if [ -n "$3" ]; then
-    reg="$3"
+if [ -n "$2" ]; then
+    reg="$2"
 else
     read -p "Enter the region: " reg
 fi
@@ -52,8 +52,8 @@ else
     read -p "Enter the KMS Key ID: " kms_key_id
 fi
 
-if [ -n "$2" ]; then
-    instance_id="$2"
+if [ -n "$3" ]; then
+    instance_id="$3"
 else
     read -p "Enter the Instance ID to encrypt: " instance_id
 fi
