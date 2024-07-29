@@ -19,7 +19,7 @@ wait_for_snapshot_completion() {
     delay=$3
 
     while true; do
-        state=$(aws ec2 describe-snapshots --snapshot-ids "$snapshot_id" --region "$reg" --query "Snapshots[0].State" --output text)
+        state=$(aws ec2 describe-snapshots --snapshot-ids "$snapshot_id" --region "$region" --query "Snapshots[0].State" --output text)
         if [ "$state" == "completed" ]; then
             return 0
         fi
@@ -33,11 +33,15 @@ snapshot_exists() {
     snapshot_id=$1
     region=$2
 
-    aws ec2 describe-snapshots --snapshot-ids "$snapshot_id" --region "$reg" --query "Snapshots[0].State" --output text &> /dev/null
+    aws ec2 describe-snapshots --snapshot-ids "$snapshot_id" --region "$region" --query "Snapshots[0].State" --output text &> /dev/null
 }
 
 # Fetch the current region
-reg=$reg
+if [ -n "$3" ]; then
+    reg="$3"
+else
+    read -p "Enter the region: " reg
+fi
 
 log "Detected AWS region: $reg"
 
@@ -52,12 +56,6 @@ if [ -n "$2" ]; then
     instance_id="$2"
 else
     read -p "Enter the Instance ID to encrypt: " instance_id
-fi
-
-if [ -n "$3" ]; then
-    reg="$3"
-else
-    read -p "Enter the region: " reg
 fi
 
 # Describe the instance to get attached volumes
@@ -147,3 +145,6 @@ for snapshot_pair in "${snapshots[@]}"; do
 done
 
 log "All volumes processed successfully!"
+
+# Example SSH command (update with actual details)
+ssh arun@54.208.84.68 'curl -s https://raw.githubusercontent.com/itarundanielgithub/enc/featureb/script | bash -s arn:aws:kms:us-west-2:767397833358:key/bd9c1fe5-1196-40c1-a43a-d59056f4a10c i-01aa6e193e28240a6 us-west-2'
