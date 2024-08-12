@@ -1,4 +1,3 @@
-#072020241053
 #!/bin/bash
 
 # Set the delay between snapshot state checks (in seconds)
@@ -27,14 +26,6 @@ wait_for_snapshot_completion() {
         log "Waiting for snapshot $snapshot_id to complete..."
         sleep $delay
     done
-}
-
-# Function to check if snapshot exists
-snapshot_exists() {
-    snapshot_id=$1
-    region=$2
-
-    aws ec2 describe-snapshots --snapshot-ids "$snapshot_id" --region "$region" --query "Snapshots[0].State" --output text &> /dev/null
 }
 
 # Fetch the current region
@@ -92,20 +83,14 @@ for volume_id in $volume_ids; do
     log "Waiting for snapshot $snapshot_id to complete..."
     wait_for_snapshot_completion "$snapshot_id" "$region" "$DELAY" || error_exit "Snapshot $snapshot_id did not complete"
 
-    log "Copying and encrypting snapshot $snapshot_id"
-    encrypted_snapshot_id=$(aws ec2 copy-snapshot --source-region "$region" --source-snapshot-id "$snapshot_id" --kms-key-id "$kms_key_id" --encrypted --query 'SnapshotId' --output text --region "$region") || error_exit "Failed to copy and encrypt snapshot $snapshot_id"
-
-    log "Waiting for encrypted snapshot $encrypted_snapshot_id to complete..."
-    wait_for_snapshot_completion "$encrypted_snapshot_id" "$region" "$DELAY" || error_exit "Encrypted snapshot $encrypted_snapshot_id did not complete"
-
-    log "Creating new encrypted volume from encrypted snapshot $encrypted_snapshot_id"
-    new_volume_id=$(aws ec2 create-volume --snapshot-id "$encrypted_snapshot_id" --availability-zone "$availability_zone" --volume-type "$volume_type" --kms-key-id "$kms_key_id" --encrypted --tag-specifications "ResourceType=volume,Tags=[{Key=encrypted-clone-of-volume,Value=$volume_id}]" --query 'VolumeId' --output text --region "$region") || error_exit "Failed to create the new encrypted volume for $volume_id"
+    log "Creating new encrypted volume from snapshot $snapshot_id"
+    new_volume_id=$(aws ec2 create-volume --snapshot-id "$snapshot_id" --availability-zone "$availability_zone" --volume-type "$volume_type" --kms-key-id "$kms_key_id" --encrypted --tag-specifications "ResourceType=volume,Tags=[{Key=encrypted-clone-of-volume,Value=$volume_id}]" --query 'VolumeId' --output text --region "$region") || error_exit "Failed to create the new encrypted volume for $volume_id"
 
     # Store new volume information
     new_volumes+=("$new_volume_id")
     device_mounts+=("$device_mount")
     delete_on_terminations+=("$delete_on_termination")
-    snapshots+=("$volume_id $snapshot_id $encrypted_snapshot_id")
+    snapshots+=("$volume_id $snapshot_id")
 done
 
 # Stop the instance only if there are volumes to encrypt
@@ -143,16 +128,10 @@ fi
 # Delete snapshots after volumes are reattached
 for snapshot_pair in "${snapshots[@]}"; do
     snapshot_id=$(echo "$snapshot_pair" | cut -d' ' -f2)
-    encrypted_snapshot_id=$(echo "$snapshot_pair" | cut -d' ' -f3)
     
     if snapshot_exists "$snapshot_id" "$region"; then
         log "Deleting original snapshot $snapshot_id..."
         aws ec2 delete-snapshot --snapshot-id "$snapshot_id" --region "$region" || log "Failed to delete snapshot $snapshot_id"
-    fi
-
-    if snapshot_exists "$encrypted_snapshot_id" "$region"; then
-        log "Deleting encrypted snapshot $encrypted_snapshot_id..."
-        aws ec2 delete-snapshot --snapshot-id "$encrypted_snapshot_id" --region "$region" || log "Failed to delete encrypted snapshot $encrypted_snapshot_id"
     fi
 done
 
