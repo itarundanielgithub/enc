@@ -8,3 +8,5 @@ To use the script, run the following command in your terminal. Replace `kmsARN w
 
 ```sh
 curl -s https://raw.githubusercontent.com/itarundanielgithub/enc/main/script | bash -s kmsARN instanceID
+
+curl -s https://raw.githubusercontent.com/itarundanielgithub/enc/{branch}/script | bash -s kmsARN instanceID
